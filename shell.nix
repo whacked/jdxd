@@ -20,5 +20,10 @@ pkgs.mkShell {
   packages = [
     goEnv
     gomod2nix
+    pkgs.just
   ];
+
+  shellHook = ''
+    eval "$(just --completions bash)"
+  '';
 }
