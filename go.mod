@@ -1,3 +1,3 @@
-module example.com/gomod2nix-template
+module github.com/whacked/jdxd
 
-go 1.17
+go 1.20
