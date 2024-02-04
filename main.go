@@ -20,7 +20,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
-const INPUT_VARIABLE = "INPUT"
+const INPUT_VARIABLE = "in"
 
 var DEBUG_LEVEL = 0
 
@@ -36,46 +36,82 @@ func TraceLog(msg string) {
 	}
 }
 
-type TransformationFunc func(interface{}) (interface{}, error)
+func ErrorLog(msg string) {
+	fmt.Fprintf(os.Stderr, "[ERROR] %s\n", msg)
+}
 
-func MakeRecordTransformer(transformerCode string) TransformationFunc {
-	// attempt to parse code as jsonata by default
+const (
+	JSONATA_TRANSFORMER = "jsonata"
+	JSONNET_TRANSFORMER = "jsonnet"
+)
+
+type TransformationFunc func(interface{}) (interface{}, error)
+type JsonTransformer struct {
+	Type      string
+	Transform TransformationFunc
+}
+
+func colorizeByTransformerLanguage(transformerType string, transformerName string) string {
+	switch transformerType {
+	case JSONATA_TRANSFORMER:
+		return color.GreenString(transformerName)
+	case JSONNET_TRANSFORMER:
+		return color.BlueString(transformerName)
+	default:
+		return transformerName
+	}
+}
+
+func wrapDataForTransformation(data interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		INPUT_VARIABLE: data,
+	}
+}
+
+func MakeRecordTransformer(transformerCode string) JsonTransformer {
+	// jsonnet compilation seems to fail more easily so try it first
+
+	_, err := jsonnet.SnippetToAST("<transformerCode>", transformerCode)
+	if err == nil {
+		DebugLog(fmt.Sprintf("Compiled %s expression", colorizeByTransformerLanguage(JSONNET_TRANSFORMER, JSONNET_TRANSFORMER)))
+		vm := jsonnet.MakeVM()
+		return JsonTransformer{
+			Type: JSONNET_TRANSFORMER,
+			Transform: func(data interface{}) (interface{}, error) {
+				dataAsJson, err := json.Marshal(data)
+				if err != nil {
+					return nil, err
+				}
+				vm.ExtCode(INPUT_VARIABLE, string(dataAsJson))
+				jsonStr, err := vm.EvaluateAnonymousSnippet("<transformerCode>", transformerCode)
+				if err != nil {
+					return nil, err
+				}
+				var outData interface{}
+				if err := json.Unmarshal([]byte(jsonStr), &outData); err != nil {
+					return nil, err
+				}
+				return outData, nil
+			},
+		}
+	}
 
 	jsonataEvaluator, err := jsonata.Compile(transformerCode)
 	if err == nil {
-		DebugLog(fmt.Sprintf("Compiled %s expression", color.BlueString("jsonata")))
-		return func(data interface{}) (interface{}, error) {
-			res, err := jsonataEvaluator.Eval(data)
-			if err != nil {
-				return nil, err
-			}
-			return res, nil
+		DebugLog(fmt.Sprintf("Compiled %s expression", colorizeByTransformerLanguage(JSONATA_TRANSFORMER, JSONATA_TRANSFORMER)))
+		return JsonTransformer{
+			Type: JSONATA_TRANSFORMER,
+			Transform: func(data interface{}) (interface{}, error) {
+				res, err := jsonataEvaluator.Eval(wrapDataForTransformation(data))
+				if err != nil {
+					return nil, err
+				}
+				return res, nil
+			},
 		}
 	}
 
-	_, err = jsonnet.SnippetToAST("<transformerCode>", transformerCode)
-	if err == nil {
-		DebugLog(fmt.Sprintf("Compiled %s expression", color.GreenString("jsonnet")))
-		vm := jsonnet.MakeVM()
-		return func(data interface{}) (interface{}, error) {
-			dataAsJson, err := json.Marshal(data)
-			if err != nil {
-				return nil, err
-			}
-			vm.ExtCode(INPUT_VARIABLE, string(dataAsJson))
-			jsonStr, err := vm.EvaluateAnonymousSnippet("<transformerCode>", transformerCode)
-			if err != nil {
-				return nil, err
-			}
-			var outData interface{}
-			if err := json.Unmarshal([]byte(jsonStr), &outData); err != nil {
-				return nil, err
-			}
-			return outData, nil
-		}
-	}
-
-	return nil
+	return JsonTransformer{}
 }
 
 type JsonDataValidatorFunc func(interface{}) error
@@ -131,23 +167,17 @@ func detectDelimiter(line string) rune {
 	return 0 // No valid delimiter found
 }
 
-func wrapDataForTransformation(data interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		INPUT_VARIABLE: data,
-	}
-}
-
 func transformDataStream(
 	dataSource string, transformCode string,
 	inputSchema string, outputSchema string,
 ) {
-	DebugLog(color.CyanString(fmt.Sprintf("Transforming data source: %s with transform: %s", dataSource, transformCode)))
-
-	recordTransformerFunc := MakeRecordTransformer(transformCode)
-	if recordTransformerFunc == nil {
+	recordTransformer := MakeRecordTransformer(transformCode)
+	if recordTransformer.Transform == nil {
 		fmt.Fprintf(os.Stderr, "Failed to compile transformer code: %s\n", transformCode)
 		return
 	}
+
+	DebugLog(color.CyanString(fmt.Sprintf("Transforming data source: %s with transform: %s", dataSource, colorizeByTransformerLanguage(recordTransformer.Type, transformCode))))
 
 	var inputValidator JsonDataValidatorFunc
 	var outputValidator JsonDataValidatorFunc
@@ -185,14 +215,14 @@ func transformDataStream(
 				// Assume XSV and detect delimiter
 				delimiter := detectDelimiter(line)
 				if delimiter == 0 {
-					fmt.Fprintln(os.Stderr, "No valid delimiter detected, bailing out.")
+					ErrorLog(color.RedString(fmt.Sprintf("BAIL: No valid delimiter detected from %s", line)))
 					return
 				}
 				reader := csv.NewReader(strings.NewReader(line))
 				reader.Comma = delimiter
 				headers, err := reader.Read()
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error reading headers: %v\n", err)
+					ErrorLog(color.RedString(fmt.Sprintf("Error reading headers: %v", err)))
 					return
 				}
 				lineProcessor = makeProcessXSVLineFunc(headers, delimiter)
@@ -202,40 +232,39 @@ func transformDataStream(
 		record := lineProcessor(line)
 
 		if record == nil {
-			fmt.Fprintf(os.Stderr, "Error processing record: %v\n", line)
+			ErrorLog(color.RedString(fmt.Sprintf("Error processing record: %v", line)))
 			continue
 		}
 
 		if inputValidator != nil {
 			err := inputValidator(record)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error validating input record: %v\n", err)
+				ErrorLog(color.RedString(fmt.Sprintf("Error validating input record: %v", err)))
 				continue
 			}
 		}
 
 		inputRecordJson, err := json.Marshal(record)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error serializing input record: %v\n", err)
+			ErrorLog(color.RedString(fmt.Sprintf("Error serializing input record: %v", err)))
 			continue
 		}
 		TraceLog(color.MagentaString(fmt.Sprintf("< %s", inputRecordJson)))
-		inputRecord := wrapDataForTransformation(record)
-		transformedRecord, err := recordTransformerFunc(inputRecord)
+		transformedRecord, err := recordTransformer.Transform(record)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error transforming record: %v\n", err)
+			ErrorLog(color.RedString(fmt.Sprintf("Error transforming record: %v", err)))
 			continue
 		}
 		transformedRecordJson, err := json.Marshal(transformedRecord)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error serializing transformed record: %v\n", err)
+			ErrorLog(color.RedString(fmt.Sprintf("Error serializing transformed record: %v", err)))
 			continue
 		}
 
 		if outputValidator != nil {
 			err := outputValidator(transformedRecord)
 			if err != nil {
-				fmt.Fprint(os.Stderr, color.MagentaString(fmt.Sprintf("Error validating output record: %v\n", err)))
+				ErrorLog(color.RedString(fmt.Sprintf("Error validating output record: %v", err)))
 				continue
 			}
 		}
@@ -244,7 +273,7 @@ func transformDataStream(
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading from input: %v\n", err)
+		ErrorLog(color.RedString(fmt.Sprintf("Error reading from input: %v", err)))
 	}
 }
 
@@ -252,15 +281,15 @@ func main() {
 
 	var transformerSource, inputFile, inputSchema, outputSchema string
 
-	PROGRAM_NAME := os.Args[0]
+	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 
 	var rootCmd = &cobra.Command{
 
 		Use: strings.Join(
 			[]string{
-				fmt.Sprintf("\n- <data source> | %s [transformer]  # (read from STDIN)", PROGRAM_NAME),
-				fmt.Sprintf("\n- %s [input-data] [transformer]", PROGRAM_NAME),
-				fmt.Sprintf("\n- %s [flags]", PROGRAM_NAME),
+				fmt.Sprintf("\n- <data source> | %s %s  # (read from STDIN)", COLORIZED_PROGRAM_NAME, color.CyanString("[transformer]")),
+				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[input-data] [transformer]")),
+				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
 				"\n",
 				"\n[input-data]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
 				"\n[transformer] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
