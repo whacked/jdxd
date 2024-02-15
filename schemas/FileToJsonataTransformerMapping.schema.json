@@ -1,0 +1,11 @@
+{
+  "patternProperties": {
+    "^.+$": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "type": "object"
+}

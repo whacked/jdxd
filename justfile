@@ -23,3 +23,9 @@ test-transform:
 # rerun transform examples on file changes
 watch-test:
 	watchexec -w . -r -c -- just test-transform
+
+validate-file-to-transform path:
+	check-jsonschema --schemafile schemas/FileToJsonnetTransformerMapping.schema.json {{path}}
+
+validate-io-spec path:
+	check-jsonschema --schemafile schemas/FileToValidatedInOutTransformerMapping.schema.json {{path}}

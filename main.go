@@ -24,6 +24,15 @@ const INPUT_VARIABLE = "in"
 
 var DEBUG_LEVEL = 0
 
+func SetDebugLevelFromEnvironment() {
+	maybeDebugEnvVar := os.Getenv("DEBUG")
+	if maybeDebugEnvVar != "" {
+		if debugLevel, err := strconv.Atoi(maybeDebugEnvVar); err == nil {
+			DEBUG_LEVEL = debugLevel
+		}
+	}
+}
+
 func DebugLog(msg string) {
 	if DEBUG_LEVEL > 0 {
 		fmt.Fprintf(os.Stderr, "[INFO] %s\n", msg)
@@ -377,12 +386,7 @@ func main() {
 	rootCmd.Flags().StringVarP(&transformerSource, "output-schema", "o", "", "Path to the output schema (json/jsonnet).")
 	rootCmd.Flags().StringVarP(&transformerSource, "completions", "", "", "generate shell completions for the specified shell.")
 
-	maybeDebugEnvVar := os.Getenv("DEBUG")
-	if maybeDebugEnvVar != "" {
-		if debugLevel, err := strconv.Atoi(maybeDebugEnvVar); err == nil {
-			DEBUG_LEVEL = debugLevel
-		}
-	}
+	SetDebugLevelFromEnvironment()
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

@@ -1,0 +1,27 @@
+{
+  "patternProperties": {
+    "^.+$": {
+      "properties": {
+        "inputSchema": {
+          "type": "object"
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "transformer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputSchema",
+        "transformer",
+        "outputSchema"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "type": "object"
+}

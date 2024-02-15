@@ -21,6 +21,7 @@ pkgs.mkShell {
     goEnv
     gomod2nix
     pkgs.just
+    pkgs.check-jsonschema
   ];
 
   shellHook = ''
