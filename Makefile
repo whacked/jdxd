@@ -19,7 +19,13 @@ schemas/%.json: generators/%.jsonnet
 	$(call render_jsonnet,$<,$@)
 
 # generate json schemas from jsonnet
-schemas: schemas/FileToJsonataTransformerMapping.schema.json schemas/FileToValidatedInOutTransformerMapping.schema.json
+schemas: \
+	schemas/InXfmOutSpec.schema.json \
+	schemas/FileToJsonataTransformerMapping.schema.json \
+	schemas/FileToValidatedInOutTransformerMapping.schema.json
+
+runnable.go: schemas/InXfmOutSpec.schema.json
+	go-jsonschema -p main $< | tee $@
 
 # build the binary
 jdxd:
