@@ -19,11 +19,17 @@ import (
 //go:embed schemas/FileToJsonataTransformerMapping.schema.json
 var fileToJsonataTransformerMapping embed.FS
 
+const fileToJsonataTransformerEmbedPath = "schemas/FileToJsonataTransformerMapping.schema.json"
+
 //go:embed schemas/FileToValidatedInOutTransformerMapping.schema.json
 var fileToValidatedInOutTransformerMapping embed.FS
 
+const fileToValidatedInOutTransformerEmbedPath = "schemas/FileToValidatedInOutTransformerMapping.schema.json"
+
 //go:embed schemas/InXfmOutSpec.schema.json
 var InXfmOutSpec embed.FS
+
+const InXfmOutSpecEmbedPath = "schemas/InXfmOutSpec.schema.json"
 
 func removeCStyleComments(input string) string { // jsonata-go doesn't parse comments now
 	re := regexp.MustCompile(`/\*[^*]*\*+(?:[^/*][^*]*\*+)*/`)
@@ -97,7 +103,7 @@ func readDirectoryProcessorSpec(sourceFile string) map[string]*InXfmOutSpecSchem
 	}
 
 	var out map[string]*InXfmOutSpecSchemaJson = make(map[string]*InXfmOutSpecSchemaJson)
-	fileToJsonnetTransformerMappingValidator := loadValidator(fileToJsonataTransformerMapping, "schemas/FileToJsonataTransformerMapping.schema.json")
+	fileToJsonnetTransformerMappingValidator := loadValidator(fileToJsonataTransformerMapping, fileToJsonataTransformerEmbedPath)
 
 	if err := fileToJsonnetTransformerMappingValidator.Validate(toValidate); err != nil {
 		DebugLog(fmt.Sprintf("2. FAILED TO VALIDATE JSON FROM %s", sourceFile))
@@ -119,7 +125,7 @@ func readDirectoryProcessorSpec(sourceFile string) map[string]*InXfmOutSpecSchem
 		}
 	}
 
-	fileToValidatedInOutTransformerMappingValidator := loadValidator(fileToValidatedInOutTransformerMapping, "schemas/FileToValidatedInOutTransformerMapping.schema.json")
+	fileToValidatedInOutTransformerMappingValidator := loadValidator(fileToValidatedInOutTransformerMapping, fileToValidatedInOutTransformerEmbedPath)
 
 	if err := fileToValidatedInOutTransformerMappingValidator.Validate(toValidate); err != nil {
 		DebugLog(fmt.Sprintf("3. FAILED TO VALIDATE JSON FROM %s", sourceFile))
