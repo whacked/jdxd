@@ -15,18 +15,18 @@ define render_jsonnet
 	jsonnet $1 | jq -S | tee $2
 endef
 
-schemas/%.json: generators/%.jsonnet
+cmd/jdxd/schemas/%.json: generators/%.jsonnet
 	$(call render_jsonnet,$<,$@)
 
 # generate json schemas from jsonnet
 schemas: \
-	schemas/InXfmOutSpec.schema.json \
-	schemas/FileToJsonataTransformerMapping.schema.json \
-	schemas/FileToValidatedInOutTransformerMapping.schema.json
+	cmd/jdxd/schemas/InXfmOutSpec.schema.json \
+	cmd/jdxd/schemas/FileToJsonataTransformerMapping.schema.json \
+	cmd/jdxd/schemas/FileToValidatedInOutTransformerMapping.schema.json
 
-runnable.go: schemas/InXfmOutSpec.schema.json
-	go-jsonschema -p main $< | tee $@
+pkg/jdxd/runnable.go: schemas/InXfmOutSpec.schema.json
+	go-jsonschema -p jdxd $< | tee $@
 
 # build the binary
-jdxd:
-	go build
+build:
+	go -o jdxd build cmd/jdxd/main.go

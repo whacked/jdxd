@@ -1,8 +1,10 @@
-package main
+package jdxd
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,7 +16,6 @@ import (
 	"github.com/blues/jsonata-go"
 	"github.com/fatih/color"
 	"github.com/google/go-jsonnet"
-	"github.com/spf13/cobra"
 
 	"encoding/csv"
 
@@ -68,7 +69,7 @@ type JsonTransformer struct {
 	Transform TransformationFunc
 }
 
-func colorizeByTransformerLanguage(transformerType string, transformerName string) string {
+func ColorizeByTransformerLanguage(transformerType string, transformerName string) string {
 	switch transformerType {
 	case JSONATA_TRANSFORMER:
 		return color.GreenString(transformerName)
@@ -92,7 +93,7 @@ func MakeRecordTransformer(transformerCode string, knownCodeFormat string, trans
 
 		_, err := jsonnet.SnippetToAST("<transformerCode>", transformerCode)
 		if err == nil {
-			DebugLog(fmt.Sprintf("Compiled %s expression", colorizeByTransformerLanguage(JSONNET_TRANSFORMER, JSONNET_TRANSFORMER)))
+			DebugLog(fmt.Sprintf("Compiled %s expression", ColorizeByTransformerLanguage(JSONNET_TRANSFORMER, JSONNET_TRANSFORMER)))
 			vm := jsonnet.MakeVM()
 			return JsonTransformer{
 				Type: JSONNET_TRANSFORMER,
@@ -123,7 +124,7 @@ func MakeRecordTransformer(transformerCode string, knownCodeFormat string, trans
 	if knownCodeFormat == "" || knownCodeFormat == JSONATA_TRANSFORMER {
 		jsonataEvaluator, err := jsonata.Compile(transformerCode)
 		if err == nil {
-			DebugLog(fmt.Sprintf("Compiled %s expression", colorizeByTransformerLanguage(JSONATA_TRANSFORMER, JSONATA_TRANSFORMER)))
+			DebugLog(fmt.Sprintf("Compiled %s expression", ColorizeByTransformerLanguage(JSONATA_TRANSFORMER, JSONATA_TRANSFORMER)))
 			return JsonTransformer{
 				Type: JSONATA_TRANSFORMER,
 				Transform: func(data interface{}) (interface{}, error) {
@@ -193,13 +194,50 @@ func detectDelimiter(line string) rune {
 	return 0 // No valid delimiter found
 }
 
-func isDirectory(path string) bool {
+func LoadValidator(resourceVariable embed.FS, filePath string) *jsonschema.Schema {
+	validatorSource, err := fs.ReadFile(resourceVariable, filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", filePath, err)
+	}
+	validator, err := jsonschema.CompileString(filePath, string(validatorSource))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error compiling %s: %v\n", filePath, err)
+	}
+	return validator
+}
+
+func RenderJsonnetFile(sourceFile string) string {
+	vm := jsonnet.MakeVM()
+	jsonStr, err := vm.EvaluateFile(sourceFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error evaluating %s: %v\n", sourceFile, err)
+	}
+	return jsonStr
+}
+
+func JsonDataToLine(jsonData interface{}) string {
+	jsonified, err := json.Marshal(jsonData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling JSON: %v\n", err)
+	}
+	return string(jsonified)
+}
+
+func JsonDataToString(jsonData interface{}) string {
+	jsonified, err := json.MarshalIndent(jsonData, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling JSON: %v\n", err)
+	}
+	return string(jsonified)
+}
+
+func IsDirectory(path string) bool {
 	fileInfo, err := os.Stat(path)
 	bailOnError(err)
 	return fileInfo.IsDir()
 }
 
-func transformRecord(
+func TransformRecord(
 	recordPtr *interface{},
 	inputValidator JsonDataValidatorFunc,
 	outputValidator JsonDataValidatorFunc,
@@ -237,7 +275,33 @@ func transformRecord(
 	return transformedRecord
 }
 
-func transformDataStream(
+func debugShowLineMatchingConditions(line string) {
+
+	TraceLog(fmt.Sprintf("line: %s", line))
+
+	if strings.HasPrefix(line, "{") {
+		TraceLog("line starts with {")
+	} else {
+		TraceLog("line does not start with {")
+	}
+	if strings.HasSuffix(line, "}") {
+		TraceLog("line ends with }")
+	} else {
+		TraceLog("line does not end with }")
+	}
+	if strings.HasPrefix(line, "[") {
+		TraceLog("line starts with [")
+	} else {
+		TraceLog("line does not start with [")
+	}
+	if strings.HasSuffix(line, "]") {
+		TraceLog("line ends with ]")
+	} else {
+		TraceLog("line does not end with ]")
+	}
+}
+
+func TransformDataStream(
 	scanner *bufio.Scanner,
 	inputValidator JsonDataValidatorFunc,
 	outputValidator JsonDataValidatorFunc,
@@ -251,6 +315,12 @@ func transformDataStream(
 		line := strings.TrimSpace(scanner.Text())
 
 		if lineProcessor == nil {
+			if line == "" {
+				continue
+			}
+
+			debugShowLineMatchingConditions(line)
+
 			// Detect format and initialize processing function
 			if (strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}")) || (strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]")) {
 				// jsonl: record per line
@@ -288,8 +358,8 @@ func transformDataStream(
 			return
 		}
 
-		transformed := transformRecord(&record, inputValidator, outputValidator, recordTransformer)
-		fmt.Println(jsonDataToString(transformed))
+		transformed := TransformRecord(&record, inputValidator, outputValidator, recordTransformer)
+		fmt.Println(JsonDataToLine(transformed))
 	}
 
 	if len(linesBuffer) > 0 {
@@ -297,8 +367,8 @@ func transformDataStream(
 			linesBuffer = append(linesBuffer, strings.TrimSpace(scanner.Text()))
 		}
 		record := processJSONLine(strings.Join(linesBuffer, "\n"))
-		transformed := transformRecord(&record, inputValidator, outputValidator, recordTransformer)
-		fmt.Println(jsonDataToString(transformed))
+		transformed := TransformRecord(&record, inputValidator, outputValidator, recordTransformer)
+		fmt.Println(JsonDataToString(transformed))
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -306,7 +376,7 @@ func transformDataStream(
 	}
 }
 
-func transformFile(
+func TransformFile(
 	filePath string,
 	inputValidator JsonDataValidatorFunc,
 	outputValidator JsonDataValidatorFunc,
@@ -323,174 +393,14 @@ func transformFile(
 		defer dataFile.Close()
 		var scanner *bufio.Scanner
 		scanner = bufio.NewScanner(dataFile)
-		transformDataStream(scanner, inputValidator, outputValidator, recordTransformer)
+		TransformDataStream(scanner, inputValidator, outputValidator, recordTransformer)
 	case ".json":
 		// read the entire file and process it as a single record
 		jsonBytes, err := os.ReadFile(filePath)
 		bailOnError(err)
 		record := processJSONLine(string(jsonBytes))
-		transformRecord(&record, inputValidator, outputValidator, recordTransformer)
+		transformed := TransformRecord(&record, inputValidator, outputValidator, recordTransformer)
+		fmt.Println(JsonDataToString(transformed))
 	}
 
-}
-
-func transformDataStreamSource(
-	dataSource string, transformCode string,
-	inputSchema string, outputSchema string,
-	transformCodeKnownFormat string,
-	transformerFilePath string,
-) {
-	recordTransformer := MakeRecordTransformer(transformCode, transformCodeKnownFormat, transformerFilePath)
-	if recordTransformer.Transform == nil {
-		fmt.Fprintf(os.Stderr, "Failed to compile transformer code: %s\n", transformCode)
-		return
-	}
-
-	DebugLog(color.CyanString(fmt.Sprintf("Transforming data source: %s with transform: %s", dataSource, colorizeByTransformerLanguage(recordTransformer.Type, transformCode))))
-
-	var inputValidator JsonDataValidatorFunc
-	var outputValidator JsonDataValidatorFunc
-	if inputSchema != "" && inputSchema != "null" {
-		inputValidator = MakeRecordValidatorFromJsonString("input-schema", inputSchema)
-	}
-	if outputSchema != "" && outputSchema != "null" {
-		outputValidator = MakeRecordValidatorFromJsonString("output-schema", outputSchema)
-	}
-
-	if dataSource == "-" {
-		transformDataStream(bufio.NewScanner(os.Stdin), inputValidator, outputValidator, recordTransformer)
-	} else if isDirectory(dataSource) {
-		for _, filePath := range getJsonRecordFiles(dataSource) {
-			transformFile(filePath, inputValidator, outputValidator, recordTransformer)
-		}
-	} else {
-		transformFile(dataSource, inputValidator, outputValidator, recordTransformer)
-	}
-}
-
-func main() {
-
-	var transformerSource, inputFile, inputSchema, outputSchema string
-
-	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
-
-	var rootCmd = &cobra.Command{
-
-		Use: strings.Join(
-			[]string{
-				fmt.Sprintf("\n- <data source> | %s %s  # (read from STDIN)", COLORIZED_PROGRAM_NAME, color.CyanString("[transformer]")),
-				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[input-data] [transformer]")),
-				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
-				"\n",
-				"\n[input-data]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
-				"\n[transformer] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
-				"\n[flags]       specify arguments explicitly for more complex processing; see help",
-			},
-			"",
-		),
-		Short: "App transforms JSONL/XSV files based on transformation code.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-
-			if generateShellCompletionsFlag := cmd.Flag("completions"); generateShellCompletionsFlag.Changed {
-				targetShell := generateShellCompletionsFlag.Value.String()
-				switch targetShell {
-				case "bash":
-					cmd.Root().GenBashCompletion(os.Stdout)
-					return nil
-				case "zsh":
-					cmd.Root().GenZshCompletion(os.Stdout)
-					return nil
-				case "fish":
-					cmd.Root().GenFishCompletion(os.Stdout, false)
-					return nil
-				case "powershell":
-					cmd.Root().GenPowerShellCompletion(os.Stdout)
-					return nil
-				default:
-					return fmt.Errorf("unsupported shell: %s", targetShell)
-				}
-			}
-
-			if transformerSourceFlag := cmd.Flag("transformer"); transformerSourceFlag.Changed {
-				transformerSource = transformerSourceFlag.Value.String()
-			}
-			if inputFileFlag := cmd.Flag("input-data"); inputFileFlag.Changed {
-				inputFile = inputFileFlag.Value.String()
-			}
-			if inputSchemaFlag := cmd.Flag("input-schema"); inputSchemaFlag.Changed {
-				inputSchema = inputSchemaFlag.Value.String()
-			}
-			if outputSchemaFlag := cmd.Flag("output-schema"); outputSchemaFlag.Changed {
-				outputSchema = outputSchemaFlag.Value.String()
-			}
-
-			if len(args) == 0 {
-				return fmt.Errorf("need at least a transformer to do anything")
-			}
-
-			if len(args) == 2 && isDirectory(args[0]) {
-				processDirectory(args[0], args[1])
-			}
-
-			if transformerSource == "" && len(args) == 1 {
-				transformerSource = args[0]
-				inputFile = "-"
-			}
-
-			if transformerSource == "" && inputFile == "" {
-				if len(args) == 2 {
-					transformerSource = args[len(args)-1]
-					inputFile = args[0]
-				}
-			}
-
-			if transformerSource == "" && inputFile == "" {
-				return fmt.Errorf("could not parse %d arguments: %v; you need at least a transformer to do anything", len(args), args)
-			}
-
-			// detect if transformer is a .jsonata/.jsonnet file or a string
-			var transformerCode string
-			var transformerCodeKnownFormat string
-			var transformerFilePath string
-			if strings.HasSuffix(transformerSource, ".jsonnet") || strings.HasSuffix(transformerSource, ".json") { // assume a spec file
-				TraceLog("received a spec file")
-				inOutProcessorSpec := readInOutProcessorSpec(transformerSource)
-				transformDataStreamSource(inputFile,
-					*inOutProcessorSpec.Jsonata,
-					jsonDataToString(inOutProcessorSpec.In),
-					jsonDataToString(inOutProcessorSpec.Out),
-					JSONATA_TRANSFORMER,
-					transformerFilePath)
-				return nil
-			} else if !(strings.HasSuffix(transformerSource, ".jsonata") /* hold on this for now  || strings.HasSuffix(transformerSource, ".jsonnet") */) {
-				transformerCode = transformerSource
-			} else {
-				transformerFilePath = transformerSource
-				transformerSourceBytes, err := os.ReadFile(transformerSource)
-				transformerCodeKnownFormat = strings.ToLower(strings.TrimPrefix(
-					filepath.Ext(transformerSource), "."))
-				if err != nil {
-					return fmt.Errorf("could not read transformer file: %s", transformerSource)
-				}
-				transformerCode = strings.TrimSpace(string(transformerSourceBytes))
-				fmt.Printf("Read transformer code: %s\n", transformerCode)
-			}
-
-			transformDataStreamSource(inputFile, transformerCode, inputSchema, outputSchema, transformerCodeKnownFormat, transformerFilePath)
-			return nil
-		},
-	}
-
-	rootCmd.Flags().StringVarP(&inputFile, "input-data", "d", "", "Path to the data file to be processed.")
-	rootCmd.Flags().StringVarP(&transformerSource, "transformer", "t", "", "Path to the transformer code file.")
-	rootCmd.Flags().StringVarP(&transformerSource, "input-schema", "i", "", "Path to the input schema (json/jsonnet).")
-	rootCmd.Flags().StringVarP(&transformerSource, "output-schema", "o", "", "Path to the output schema (json/jsonnet).")
-	rootCmd.Flags().StringVarP(&transformerSource, "completions", "", "", "generate shell completions for the specified shell.")
-
-	SetDebugLevelFromEnvironment()
-
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
 }
