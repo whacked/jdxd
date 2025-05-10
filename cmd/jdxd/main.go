@@ -15,8 +15,43 @@ import (
 	_ "github.com/whacked/jdxd/pkg/jdxd"
 
 	"github.com/fatih/color"
-	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
+
+const (
+	ProgramName = "jdxd"
+)
+
+// JDXDCliConfig represents the complete configuration needed to run jdxd
+type JDXDCliConfig struct {
+	// Core transformation configuration
+	TransformerSource string
+	InputFile        string
+	InputSchema      string
+	OutputSchema     string
+	IsStdin        bool
+
+	// Shell completion generation
+	GenerateShellCompletions string
+}
+
+
+var SupportedShells = map[string]bool{
+	"bash":       true,
+	"zsh":        true,
+	"fish":       true,
+	"powershell": true,
+}
+
+type ConfigValidationError struct {
+	Reason string
+	Field  string
+	Detail string
+}
+
+func (e ConfigValidationError) Error() string {
+	return fmt.Sprintf("invalid config: %s (field: %s, detail: %s)", e.Reason, e.Field, e.Detail)
+}
 
 //go:embed schemas/FileToJsonataTransformerMapping.schema.json
 var fileToJsonataTransformerMapping embed.FS
@@ -32,6 +67,17 @@ const fileToValidatedInOutTransformerEmbedPath = "schemas/FileToValidatedInOutTr
 var InXfmOutSpec embed.FS
 
 const InXfmOutSpecEmbedPath = "schemas/InXfmOutSpec.schema.json"
+
+// getMapKeys returns a slice of keys from a map
+// somehow we expect this to be in the "maps" package but
+// on my go1.22 it doesn't work
+func getMapKeys[K comparable, V any](m map[K]V) []K {
+	keys := make([]K, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
 
 func removeCStyleComments(input string) string { // jsonata-go doesn't parse comments now
 	re := regexp.MustCompile(`/\*[^*]*\*+(?:[^/*][^*]*\*+)*/`)
@@ -197,10 +243,12 @@ func transformDataStreamSource(
 	var inputValidator jdxd.JsonDataValidatorFunc
 	var outputValidator jdxd.JsonDataValidatorFunc
 	if inputSchema != "" && inputSchema != "null" {
-		inputValidator = jdxd.MakeRecordValidatorFromJsonString("input-schema", inputSchema)
+		jsonStr := jdxd.RenderJsonnetFile(inputSchema)
+		inputValidator = jdxd.MakeRecordValidatorFromJsonString("input-schema", jsonStr)
 	}
 	if outputSchema != "" && outputSchema != "null" {
-		outputValidator = jdxd.MakeRecordValidatorFromJsonString("output-schema", outputSchema)
+		jsonStr := jdxd.RenderJsonnetFile(outputSchema)
+		outputValidator = jdxd.MakeRecordValidatorFromJsonString("output-schema", jsonStr)
 	}
 
 	if dataSource == "-" {
@@ -286,131 +334,173 @@ func processDirectory(rootDirectory string, directoryProcessorSpecFile string) {
 	jdxd.DebugLog(fmt.Sprintf("Processed %d files", numProcessed))
 }
 
+func parseArgs(args []string) (*JDXDCliConfig, error) {
+	cfg := &JDXDCliConfig{}
+	// Check if any flag-style arg exists
+	hasFlags := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") && len(arg) > 1 && arg != "-" {
+			hasFlags = true
+			break
+		}
+	}
+
+	if !hasFlags {
+		// Handle positional args manually
+		switch len(args) {
+		case 1:
+			cfg.TransformerSource = args[0]
+			cfg.InputFile = "-"
+			cfg.IsStdin = true
+		case 2:
+			cfg.InputFile = args[0]
+			cfg.TransformerSource = args[1]
+		default:
+			return nil, fmt.Errorf("invalid number of positional args: need a transformer source and input file or stdin")
+		}
+		return cfg, nil
+	}
+
+	// Use pflag to parse flags
+	fs := pflag.NewFlagSet(ProgramName, pflag.ContinueOnError)
+	transformer := fs.StringP("transformer", "t", "", "path to transformer file, or transformer code")
+	input := fs.StringP("input-data", "d", "", "path to input file, or '-' for stdin")
+	inSchema := fs.StringP("input-schema", "i", "", "path to input schema file, or schema as json(net) string")
+	outSchema := fs.StringP("output-schema", "o", "", "path to output schema file, or schema as json(net) string")
+	completions := fs.String("completions", "",
+		"generate shell completions for the given shell ("+strings.Join(getMapKeys(SupportedShells), ", ")+")",
+	)
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+
+	// Positional args not allowed in flag mode
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("positional args not allowed with flags")
+	}
+
+	cfg.TransformerSource = *transformer
+	cfg.InputFile = *input
+	cfg.InputSchema = *inSchema
+	cfg.OutputSchema = *outSchema
+	cfg.GenerateShellCompletions = *completions
+
+	if cfg.GenerateShellCompletions == "" && cfg.InputFile == "" {
+		cfg.InputFile = "-"
+	}
+
+	// Handle stdin mode for flag-based input
+	if cfg.InputFile == "-" {
+		cfg.IsStdin = true
+	}
+
+	return cfg, nil
+}
+
+// IsValid returns an error if the configuration is invalid
+func (c *JDXDCliConfig) IsValid() error {
+	// Shell completions mode
+	if c.GenerateShellCompletions != "" {
+		if !SupportedShells[c.GenerateShellCompletions] {
+			return ConfigValidationError{
+				Reason: "unsupported shell",
+				Field:  "GenerateShellCompletions",
+				Detail: c.GenerateShellCompletions,
+			}
+		}
+	} else {
+		// Must have a transformer source
+		if c.TransformerSource == "" {
+			return ConfigValidationError{
+				Reason: "missing required field",
+				Field:  "TransformerSource",
+				Detail: "need at least a transformer as input",
+			}
+		}
+		
+		if _, err := os.Stat(c.TransformerSource); os.IsNotExist(err) {
+			return ConfigValidationError{
+				Reason: "file not found",
+				Field:  "TransformerSource",
+				Detail: c.TransformerSource,
+			}
+		}
+
+		// STDIN mode validation
+		if c.IsStdin {
+			if c.InputFile != "-" {
+				return ConfigValidationError{
+					Reason: "invalid input file",
+					Field:  "InputFile",
+					Detail: "stdin mode requires input file to be '-'",
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func main() {
-
-	var transformerSource, inputFile, inputSchema, outputSchema string
-
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 	fmt.Println("HELLO", COLORIZED_PROGRAM_NAME)
 
-	var rootCmd = &cobra.Command{
-
-		Use: strings.Join(
-			[]string{
-				fmt.Sprintf("\n- <data source> | %s %s  # (read from STDIN)", COLORIZED_PROGRAM_NAME, color.CyanString("[transformer]")),
-				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[input-data] [transformer]")),
-				fmt.Sprintf("\n- %s %s", COLORIZED_PROGRAM_NAME, color.CyanString("[flags]")),
-				"\n",
-				"\n[input-data]  is the path to the input data file to be processed, or - to read from STDIN, or implied as STDIN",
-				"\n[transformer] is the path to the jsonata or jsonnet file to be used for transformation, or the code as a string",
-				"\n[flags]       specify arguments explicitly for more complex processing; see help",
-			},
-			"",
-		),
-		Short: "App transforms JSONL/XSV files based on transformation code.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-
-			if generateShellCompletionsFlag := cmd.Flag("completions"); generateShellCompletionsFlag.Changed {
-				targetShell := generateShellCompletionsFlag.Value.String()
-				switch targetShell {
-				case "bash":
-					cmd.Root().GenBashCompletion(os.Stdout)
-					return nil
-				case "zsh":
-					cmd.Root().GenZshCompletion(os.Stdout)
-					return nil
-				case "fish":
-					cmd.Root().GenFishCompletion(os.Stdout, false)
-					return nil
-				case "powershell":
-					cmd.Root().GenPowerShellCompletion(os.Stdout)
-					return nil
-				default:
-					return fmt.Errorf("unsupported shell: %s", targetShell)
-				}
-			}
-
-			if transformerSourceFlag := cmd.Flag("transformer"); transformerSourceFlag.Changed {
-				transformerSource = transformerSourceFlag.Value.String()
-			}
-			if inputFileFlag := cmd.Flag("input-data"); inputFileFlag.Changed {
-				inputFile = inputFileFlag.Value.String()
-			}
-			if inputSchemaFlag := cmd.Flag("input-schema"); inputSchemaFlag.Changed {
-				inputSchema = inputSchemaFlag.Value.String()
-			}
-			if outputSchemaFlag := cmd.Flag("output-schema"); outputSchemaFlag.Changed {
-				outputSchema = outputSchemaFlag.Value.String()
-			}
-
-			if len(args) == 0 {
-				return fmt.Errorf("need at least a transformer to do anything")
-			}
-
-			if len(args) == 2 && jdxd.IsDirectory(args[0]) {
-				processDirectory(args[0], args[1])
-			}
-
-			if transformerSource == "" && len(args) == 1 {
-				transformerSource = args[0]
-				inputFile = "-"
-			}
-
-			if transformerSource == "" && inputFile == "" {
-				if len(args) == 2 {
-					transformerSource = args[len(args)-1]
-					inputFile = args[0]
-				}
-			}
-
-			if transformerSource == "" && inputFile == "" {
-				return fmt.Errorf("could not parse %d arguments: %v; you need at least a transformer to do anything", len(args), args)
-			}
-
-			// detect if transformer is a .jsonata/.jsonnet file or a string
-			var transformerCode string
-			var transformerCodeKnownFormat string
-			var transformerFilePath string
-			if strings.HasSuffix(transformerSource, ".jsonnet") || strings.HasSuffix(transformerSource, ".json") { // assume a spec file
-				jdxd.TraceLog("received a spec file")
-				inOutProcessorSpec := readInOutProcessorSpec(transformerSource)
-				transformDataStreamSource(inputFile,
-					*inOutProcessorSpec.Jsonata,
-					jdxd.JsonDataToString(inOutProcessorSpec.In),
-					jdxd.JsonDataToString(inOutProcessorSpec.Out),
-					jdxd.JSONATA_TRANSFORMER,
-					transformerFilePath)
-				return nil
-			} else if !(strings.HasSuffix(transformerSource, ".jsonata") /* hold on this for now  || strings.HasSuffix(transformerSource, ".jsonnet") */) {
-				transformerCode = transformerSource
-			} else {
-				transformerFilePath = transformerSource
-				transformerSourceBytes, err := os.ReadFile(transformerSource)
-				transformerCodeKnownFormat = strings.ToLower(strings.TrimPrefix(
-					filepath.Ext(transformerSource), "."))
-				if err != nil {
-					return fmt.Errorf("could not read transformer file: %s", transformerSource)
-				}
-				transformerCode = strings.TrimSpace(string(transformerSourceBytes))
-			}
-			jdxd.TraceLog(fmt.Sprintf("Read transformer code: %s\n", transformerCode))
-
-			transformDataStreamSource(
-				inputFile, transformerCode, inputSchema, outputSchema, transformerCodeKnownFormat, transformerFilePath)
-			return nil
-		},
-	}
-
-	rootCmd.Flags().StringVarP(&inputFile, "input-data", "d", "", "Path to the data file to be processed.")
-	rootCmd.Flags().StringVarP(&transformerSource, "transformer", "t", "", "Path to the transformer code file.")
-	rootCmd.Flags().StringVarP(&transformerSource, "input-schema", "i", "", "Path to the input schema (json/jsonnet).")
-	rootCmd.Flags().StringVarP(&transformerSource, "output-schema", "o", "", "Path to the output schema (json/jsonnet).")
-	rootCmd.Flags().StringVarP(&transformerSource, "completions", "", "", "generate shell completions for the specified shell.")
-
-	jdxd.SetDebugLevelFromEnvironment()
-
-	if err := rootCmd.Execute(); err != nil {
+	// Parse command line arguments
+	config, err := parseArgs(os.Args[1:])
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Validate configuration
+	if err := config.IsValid(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Special case for directory processing
+	isDirectory := false
+	if config.InputFile != "-" {
+		fileInfo, err := os.Stat(config.InputFile)
+		if err == nil {
+			isDirectory = fileInfo.IsDir()
+		}
+	}
+
+	if isDirectory {
+		processDirectory(config.InputFile, config.TransformerSource)
+		return
+	}
+
+	// detect if transformer is a .jsonata/.jsonnet file or a string
+	var transformerCode string
+	var transformerCodeKnownFormat string
+	var transformerFilePath string
+	if strings.HasSuffix(config.TransformerSource, ".jsonnet") || strings.HasSuffix(config.TransformerSource, ".json") { // assume a spec file
+		jdxd.TraceLog("received a spec file")
+		inOutProcessorSpec := readInOutProcessorSpec(config.TransformerSource)
+		transformDataStreamSource(config.InputFile,
+			*inOutProcessorSpec.Jsonata,
+			jdxd.JsonDataToString(inOutProcessorSpec.In),
+			jdxd.JsonDataToString(inOutProcessorSpec.Out),
+			jdxd.JSONATA_TRANSFORMER,
+			transformerFilePath)
+		return
+	} else if !(strings.HasSuffix(config.TransformerSource, ".jsonata") /* hold on this for now  || strings.HasSuffix(transformerSource, ".jsonnet") */) {
+		transformerCode = config.TransformerSource
+	} else {
+		transformerFilePath = config.TransformerSource
+		transformerSourceBytes, err := os.ReadFile(config.TransformerSource)
+		transformerCodeKnownFormat = strings.ToLower(strings.TrimPrefix(
+			filepath.Ext(config.TransformerSource), "."))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: could not read transformer file: %s\n", config.TransformerSource)
+			os.Exit(1)
+		}
+		transformerCode = strings.TrimSpace(string(transformerSourceBytes))
+	}
+	jdxd.TraceLog(fmt.Sprintf("Read transformer code: %s\n", transformerCode))
+
+	transformDataStreamSource(
+		config.InputFile, transformerCode, config.InputSchema, config.OutputSchema, transformerCodeKnownFormat, transformerFilePath)
 }
