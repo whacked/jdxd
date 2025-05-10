@@ -29,4 +29,4 @@ pkg/jdxd/runnable.go: schemas/InXfmOutSpec.schema.json
 
 # build the binary
 build:
-	go -o jdxd build cmd/jdxd/main.go
+	go build -o jdxd cmd/jdxd/main.go
