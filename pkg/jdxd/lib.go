@@ -314,11 +314,12 @@ func TransformDataStream(
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
-		if lineProcessor == nil {
-			if line == "" {
-				continue
-			}
+		// Skip blank lines regardless of processor state
+		if line == "" {
+			continue
+		}
 
+		if lineProcessor == nil {
 			debugShowLineMatchingConditions(line)
 
 			// Detect format and initialize processing function
@@ -364,7 +365,10 @@ func TransformDataStream(
 
 	if len(linesBuffer) > 0 {
 		for scanner.Scan() {
-			linesBuffer = append(linesBuffer, strings.TrimSpace(scanner.Text()))
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" {
+				linesBuffer = append(linesBuffer, line)
+			}
 		}
 		record := processJSONLine(strings.Join(linesBuffer, "\n"))
 		transformed := TransformRecord(&record, inputValidator, outputValidator, recordTransformer)
