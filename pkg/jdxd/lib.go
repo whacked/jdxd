@@ -27,9 +27,14 @@ const INPUT_VARIABLE = "in"
 var DEBUG_LEVEL = 0
 
 func SetDebugLevelFromEnvironment() {
-	maybeDebugEnvVar := os.Getenv("DEBUG")
-	if maybeDebugEnvVar != "" {
-		if debugLevel, err := strconv.Atoi(maybeDebugEnvVar); err == nil {
+	if level := os.Getenv("DEBUG_LEVEL"); level != "" {
+		if debugLevel, err := strconv.Atoi(level); err == nil {
+			DEBUG_LEVEL = debugLevel
+			return
+		}
+	}
+	if level := os.Getenv("DEBUG"); level != "" {
+		if debugLevel, err := strconv.Atoi(level); err == nil {
 			DEBUG_LEVEL = debugLevel
 		}
 	}

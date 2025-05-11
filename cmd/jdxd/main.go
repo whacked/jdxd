@@ -442,6 +442,8 @@ func (c *JDXDCliConfig) IsValid() error {
 }
 
 func main() {
+	jdxd.SetDebugLevelFromEnvironment()
+
 	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 	fmt.Println("HELLO", COLORIZED_PROGRAM_NAME)
 
