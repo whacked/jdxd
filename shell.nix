@@ -11,6 +11,7 @@
   )
 , mkGoEnv ? pkgs.mkGoEnv
 , gomod2nix ? pkgs.gomod2nix
+, sdflow ? null
 }:
 
 let
@@ -28,6 +29,11 @@ let
     '';
     buildInputs = [ pkgs.unzip ];
   };
+
+  # Use sdflow from parameter (flake) or fetch directly (nix-shell standalone)
+  sdflowPkg = if sdflow != null then sdflow
+    else (builtins.getFlake "github:whacked/sdflow").packages.${pkgs.system}.default;
+
 in
 pkgs.mkShell {
   packages = [
@@ -36,9 +42,11 @@ pkgs.mkShell {
     pkgs.just
     pkgs.check-jsonschema
     go-jsonschema
+    sdflowPkg
   ];
 
   shellHook = ''
     eval "$(just --completions bash)"
+    export PATH=$PWD:$PATH
   '';
 }
