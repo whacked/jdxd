@@ -243,11 +243,11 @@ func transformDataStreamSource(
 	var inputValidator jdxd.JsonDataValidatorFunc
 	var outputValidator jdxd.JsonDataValidatorFunc
 	if inputSchema != "" && inputSchema != "null" {
-		jsonStr := jdxd.RenderJsonnetFile(inputSchema)
+		jsonStr := jdxd.RenderJsonnetStringOrFile(inputSchema)
 		inputValidator = jdxd.MakeRecordValidatorFromJsonString("input-schema", jsonStr)
 	}
 	if outputSchema != "" && outputSchema != "null" {
-		jsonStr := jdxd.RenderJsonnetFile(outputSchema)
+		jsonStr := jdxd.RenderJsonnetStringOrFile(outputSchema)
 		outputValidator = jdxd.MakeRecordValidatorFromJsonString("output-schema", jsonStr)
 	}
 
@@ -418,12 +418,15 @@ func (c *JDXDCliConfig) IsValid() error {
 				Detail: "need at least a transformer as input",
 			}
 		}
-		
-		if _, err := os.Stat(c.TransformerSource); os.IsNotExist(err) {
-			return ConfigValidationError{
-				Reason: "file not found",
-				Field:  "TransformerSource",
-				Detail: c.TransformerSource,
+
+		// assume ending with ")" means they're passing source code
+		if !strings.HasSuffix(strings.TrimSpace(c.TransformerSource), ")") {
+			if _, err := os.Stat(c.TransformerSource); os.IsNotExist(err) {
+				return ConfigValidationError{
+					Reason: "file not found", 
+					Field:  "TransformerSource",
+					Detail: c.TransformerSource,
+				}
 			}
 		}
 
@@ -444,8 +447,7 @@ func (c *JDXDCliConfig) IsValid() error {
 func main() {
 	jdxd.SetDebugLevelFromEnvironment()
 
-	COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
-	fmt.Println("HELLO", COLORIZED_PROGRAM_NAME)
+	// COLORIZED_PROGRAM_NAME := color.HiBlueString(os.Args[0])
 
 	// Parse command line arguments
 	config, err := parseArgs(os.Args[1:])

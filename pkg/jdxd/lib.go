@@ -220,6 +220,13 @@ func RenderJsonnetFile(sourceFile string) string {
 	return jsonStr
 }
 
+func RenderJsonnetStringOrFile(sourceOrFile string) string {
+	if strings.HasSuffix(sourceOrFile, ".jsonnet") {
+		return RenderJsonnetFile(sourceOrFile)
+	}
+	return sourceOrFile
+}
+
 func JsonDataToLine(jsonData interface{}) string {
 	jsonified, err := json.Marshal(jsonData)
 	if err != nil {
